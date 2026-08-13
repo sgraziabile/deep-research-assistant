@@ -1,12 +1,15 @@
-from datetime import datetime
 from typing import Literal
-from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, AIMessage, get_buffer_string
 from langgraph.graph import StateGraph, START, END
-
+from langgraph.types import Command
+from dotenv import load_dotenv
+from datetime import datetime
 from init_llm import get_llm
-from state_scope import AgentState, AgentInputState, ClarifyWithUser, ResearchQuestion
-from scope_prompts import CLARIFY_PROMPT, RESEARCH_BRIEF_PROMPT
+
+from state_scope import AgentState, ClarifyWithUser, ResearchQuestion, AgentInputState
+from scope_prompts import clarify_with_user_instructions, transform_messages_into_research_topic_prompt
 
 # Load environment variables from .env.local
 load_dotenv(".env.local")
@@ -17,42 +20,73 @@ def get_today_str() -> str:
     return datetime.now().strftime("%d-%m-%Y")
 
 # ==== CONFIGURATION ====
-model = get_llm()
 
-# ==== NODES & GRAPH ====
-def research_agent_scope(state: AgentState) -> dict:
+#Initialize model
+model = init_chat_model(get_llm(), model_provider="google_genai", temperature=0.0)
+
+# ==== WORKFLOW NODES ====
+def clarify_with_user(state: AgentState) -> Command[Literal["write_research_brief","__end__"]]:
     """
-    Scope node that evaluates whether to clarify with the user or generate the research brief.
+    Determine if the user's request contains sufficient information to proceed with research.
+
+    Uses structured output to make deterministic decisions and avoid hallucination.
+    Routes to either research brief generation or ends with a clarification question.
     """
-    messages_str = get_buffer_string(state.get("messages", []))
-    today_date = get_today_str()
+
+    structured_output_model = model.with_structured_output(ClarifyWithUser)
+
+    response = structured_output_model.invoke([
+        HumanMessage(content=clarify_with_user_instructions.format(
+            messages=get_buffer_string(messages=state["messages"]),
+            date=get_today_str()
+        ))
+    ])
+
+
+    if response.need_clarification:
+        return Command(
+            goto=END,
+            update={"messages": [AIMessage(content=response.question)]}
+        )
+    else:
+        return Command(
+            goto="write_research_brief",
+            update={"messages": [AIMessage(content=response.verification)]}
+        )
+
+def write_research_brief(state: AgentState):
+    """
+    Transform the conversation history into a comprehensive research brief.
+
+    Uses structured output to ensure the brief follows the required format
+    and contains all necessary details for effective research.
+    """
     
-    # 1. Check if user needs clarification
-    clarify_llm = model.with_structured_output(ClarifyWithUser)
-    clarify_res = clarify_llm.invoke(
-        CLARIFY_PROMPT.format(today=today_date, messages=messages_str)
-    )
-    
-    if clarify_res.need_clarification:
-        return {
-            "messages": [AIMessage(content=clarify_res.question)]
-        }
-    
-    # 2. Generate Research Brief if no clarification needed
-    brief_llm = model.with_structured_output(ResearchQuestion)
-    brief_res = brief_llm.invoke(
-        RESEARCH_BRIEF_PROMPT.format(today=today_date, messages=messages_str)
-    )
-    
+    structured_output_model = model.with_structured_output(ResearchQuestion)
+
+    response = structured_output_model.invoke([
+        HumanMessage(content=transform_messages_into_research_topic_prompt.format(
+            messages=get_buffer_string(state.get("messages", [])),
+            date=get_today_str()
+        ))
+    ])
+
     return {
-        "research_brief": brief_res.research_brief,
-        "messages": [AIMessage(content=clarify_res.verification)]
+        "research_brief": response.research_brief,
+        "supervisor_messages": [HumanMessage(content=f"Research brief: {response.research_brief}")]
     }
 
-# ==== GRAPH BUILDER ====
-builder = StateGraph(AgentState, input=AgentInputState)
-builder.add_node("scope", research_agent_scope)
-builder.add_edge(START, "scope")
-builder.add_edge("scope", END)
+# ==== STATE GRAPH ====
 
-graph = builder.compile()
+deep_research_builder = StateGraph(AgentState, input_schema=AgentInputState)
+
+# Add nodes to the state graph
+deep_research_builder.add_node("clarify_with_user", clarify_with_user)
+deep_research_builder.add_node("write_research_brief", write_research_brief)
+
+# Add edges to the state graph
+deep_research_builder.add_edge(START, "clarify_with_user")
+deep_research_builder.add_edge("write_research_brief", END)
+
+# Compile the workflow 
+graph = deep_research_builder.compile()
