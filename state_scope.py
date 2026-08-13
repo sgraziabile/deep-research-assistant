@@ -29,3 +29,22 @@ class AgentState(MessagesState):
     final_report: str
 
 # ==== STRUCTURED OUTPUT SCHEMAS ====
+class ClarifyWithUser(BaseModel):
+    """Schema for clarifying questions to ask the user."""
+
+    need_clarification: bool = Field(
+        description="Wether the user needs to be asked a clarifying question."
+    )
+    question: str = Field(
+        description="The clarifying question to ask the user."
+    )
+    verification: str = Field(
+        description="Verification message that we will start research after the user has provided the neccesary information."
+    )
+
+class ResearchQuestion(BaseModel):
+    """Schema for structured research brief generation."""
+
+    research_brief: str = Field(
+        description="A research question that will be used to guide the research process."
+    )

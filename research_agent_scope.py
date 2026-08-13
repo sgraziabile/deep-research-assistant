@@ -1,100 +1,58 @@
-from typing import TypedDict, Annotated, Sequence
-import operator
-from pydantic import BaseModel, Field
-from langgraph.graph import StateGraph, START, END
+from datetime import datetime
+from typing import Literal
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, AIMessage, get_buffer_string
+from langgraph.graph import StateGraph, START, END
+
+from init_llm import get_llm
+from state_scope import AgentState, AgentInputState, ClarifyWithUser, ResearchQuestion
+from scope_prompts import CLARIFY_PROMPT, RESEARCH_BRIEF_PROMPT
 
 # Load environment variables from .env.local
 load_dotenv(".env.local")
 
-# --- Types & State ---
+# ==== UTILITY FUNCTIONS ====
+def get_today_str() -> str: 
+    """Returns today's date as a string in the format DD-MM-YYYY."""
+    return datetime.now().strftime("%d-%m-%Y")
 
-# Example of Pydantic for validation
-class ResearchBrief(BaseModel):
-    topic: str = Field(description="The main topic of the research")
-    clarifications: list[str] = Field(default_factory=list, description="Any user clarifications")
-    guidelines: list[str] = Field(default_factory=list, description="Guidelines for the research")
+# ==== CONFIGURATION ====
+model = get_llm()
 
-# Example of TypedDict, Annotated, Sequence for the Graph State
-class AgentState(TypedDict):
-    # Annotated with operator.add means these sequences will be appended to rather than overwritten
-    messages: Annotated[Sequence[str], operator.add]
+# ==== NODES & GRAPH ====
+def research_agent_scope(state: AgentState) -> dict:
+    """
+    Scope node that evaluates whether to clarify with the user or generate the research brief.
+    """
+    messages_str = get_buffer_string(state.get("messages", []))
+    today_date = get_today_str()
     
-    # Validation model
-    brief: ResearchBrief
+    # 1. Check if user needs clarification
+    clarify_llm = model.with_structured_output(ClarifyWithUser)
+    clarify_res = clarify_llm.invoke(
+        CLARIFY_PROMPT.format(today=today_date, messages=messages_str)
+    )
     
-    # State for research
-    research_context: Annotated[Sequence[str], operator.add]
+    if clarify_res.need_clarification:
+        return {
+            "messages": [AIMessage(content=clarify_res.question)]
+        }
     
-    # Final output
-    report: str
-
-# --- Nodes ---
-
-def research_agent_scope(state: AgentState):
-    """
-    Stage 1. Scope: user clarification + brief generation.
-    """
-    print("--- SCOPE STAGE ---")
-    # TODO: Implement user clarification and brief generation logic here
+    # 2. Generate Research Brief if no clarification needed
+    brief_llm = model.with_structured_output(ResearchQuestion)
+    brief_res = brief_llm.invoke(
+        RESEARCH_BRIEF_PROMPT.format(today=today_date, messages=messages_str)
+    )
     
-    # Return updates to the state
-    return {"messages": ["Scope defined (placeholder)"]}
+    return {
+        "research_brief": brief_res.research_brief,
+        "messages": [AIMessage(content=clarify_res.verification)]
+    }
 
-def research_gather_context(state: AgentState):
-    """
-    Stage 2. Research: gather context from the research.
-    """
-    print("--- RESEARCH STAGE ---")
-    # TODO: Implement research logic here (e.g., using tools like Tavily or web scrapers)
-    
-    # Return updates to the state
-    return {"research_context": ["Context gathered from web/docs (placeholder)"]}
+# ==== GRAPH BUILDER ====
+builder = StateGraph(AgentState, input=AgentInputState)
+builder.add_node("scope", research_agent_scope)
+builder.add_edge(START, "scope")
+builder.add_edge("scope", END)
 
-def write_report(state: AgentState):
-    """
-    Stage 3. Writing: write the report.
-    """
-    print("--- WRITING STAGE ---")
-    # TODO: Implement writing logic here based on brief and research_context
-    
-    # Return updates to the state
-    return {"report": "This is the final research report (placeholder)."}
-
-
-# --- Graph Setup ---
-
-def build_graph():
-    """
-    Builds and compiles the LangGraph workflow.
-    """
-    workflow = StateGraph(AgentState)
-
-    # Add nodes corresponding to the architecture stages
-    workflow.add_node("scope", research_agent_scope)
-    workflow.add_node("research", research_gather_context)
-    workflow.add_node("write", write_report)
-
-    # Define the flow edges
-    workflow.add_edge(START, "scope")
-    workflow.add_edge("scope", "research")
-    workflow.add_edge("research", "write")
-    workflow.add_edge("write", END)
-
-    # Compile the graph
-    app = workflow.compile()
-    return app
-
-if __name__ == "__main__":
-    app = build_graph()
-    print("LangGraph project initialized and compiled successfully.")
-    
-    # To run the graph, you would do something like:
-    # initial_state = {
-    #     "messages": ["User request for a research topic"],
-    #     "brief": ResearchBrief(topic="Default Topic"),
-    #     "research_context": [],
-    #     "report": ""
-    # }
-    # result = app.invoke(initial_state)
-    # print(result["report"])
+graph = builder.compile()
