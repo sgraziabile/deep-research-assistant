@@ -2,6 +2,8 @@ import os
 import uuid
 from langsmith import Client
 from dotenv import load_dotenv
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from evals.eval_functions import evaluate_success_criteria, evaluate_no_assumptions
 from research_agent_scope import graph as scope
 

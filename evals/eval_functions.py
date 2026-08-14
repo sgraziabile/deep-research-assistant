@@ -73,17 +73,11 @@ def evaluate_success_criteria(outputs: dict, reference_outputs: dict):
     captured_count = sum(1 for eval_result in individual_evaluations if eval_result.is_captured)
     total_count = len(individual_evaluations)
     
+    comment_text = "\n\n".join(f"- {e.criteria_text}: {'CAPTURED' if e.is_captured else 'NOT CAPTURED'}\n  Reasoning: {e.reasoning}" for e in individual_evaluations)
     return {
         "key": "success_criteria_score", 
         "score": captured_count / total_count if total_count > 0 else 0.0,
-        "individual_evaluations": [
-            {
-                "criteria": eval_result.criteria_text,
-                "captured": eval_result.is_captured,
-                "reasoning": eval_result.reasoning
-            }
-            for eval_result in individual_evaluations
-        ]
+        "comment": comment_text
     }
 
 #Evaluate Hallucinations
@@ -133,5 +127,5 @@ def evaluate_no_assumptions(outputs: dict, reference_outputs: dict):
     return {
         "key": "no_assumptions_score", 
         "score": response.no_assumptions,
-        "reasoning": response.reasoning
+        "comment": response.reasoning
     }
